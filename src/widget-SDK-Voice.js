@@ -268,9 +268,12 @@ class myDesktopSDK extends HTMLElement {
         customLog("loaded socket.io.min.js");
         var socket = io(process.env.HOST_URI,{
             withCredentials: true,
-            // extraHeaders: {
-            //   "my-custom-header": "abcd"
-            // }
+              auth: {
+                "agentId": Desktop.agentContact.SERVICE.conf.profile.agentId,
+                "agentName": Desktop.agentContact.SERVICE.conf.profile.agentName,
+                "agentMailId": Desktop.agentContact.SERVICE.conf.profile.agentMailId,
+                "orgId": Desktop.agentContact.SERVICE.conf.profile.orgId
+              }
           });
 
           

@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import 'dotenv/config';
-import fetch from "node-fetch";
+//import fetch from "node-fetch";
 import http from "http";
 import { Server } from "socket.io";
 
@@ -40,7 +40,8 @@ app.post('/', async (req, res) => {
   console.log(req.body);
   if(req.body?.InteractionId){
     cache.set(req.body.InteractionId, req.body, 3600 * 1000);
-    io.emit("message", req.body);
+    //io.emit("message", req.body);
+    io.to(req.body.OrgId).emit('message', req.body);
     console.log("Cached", req.body.InteractionId);
   }
   res.status(200).send('OK');
@@ -70,6 +71,11 @@ app.post('/callerIds', cors(), async (req, res) => {
 
 io.on('connection', (socket) => {
   console.log('a user connected:', socket.id);
+  console.log(socket.handshake.auth);
+  if(socket.handshake.auth.orgId){
+    console.log("joining", socket.handshake.auth.orgId);
+    socket.join(socket.handshake.auth.orgId);
+  }
   socket.on('message', (msg) => {
     console.log(socket.id, "sent message:");
     console.log(msg);

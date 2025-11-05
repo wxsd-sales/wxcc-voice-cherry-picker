@@ -105,7 +105,7 @@
               "children": [
                 {
                   "comp": "sa-ds-voice-sdk",
-                  "script": "https://tahanson.eu.ngrok.io/build/bundle.js",
+                  "script": "https://cc-cherry-picker.wbx.ninja/build/bundle.js",
                   "wrapper": {
                     "title": "Cherry Picker",
                     "maximizeAreaName": "app-maximize-area"
