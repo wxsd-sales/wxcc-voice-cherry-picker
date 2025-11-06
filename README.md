@@ -51,7 +51,7 @@ _Node.js version >= 21.5 must be installed on the system in order to run this th
 
 ### 3. Wire Up the Widget to the Layout:
 
-- You must replace the url on line 108 of the **_callControlWidget.json_** file with your correct server endpoint. For examples:
+- You must replace the url on line 108 of the **_cherryPickerWidget.json_** file with your correct server endpoint. For examples:
   - "script": "http://localhost:5000/build/bundle.js",
   - "script": "https://your.webserver.com/build/bundle.js",
 - This should be based on the ```HOST_URI``` in your .env file + ```/build/bundle.js```.
