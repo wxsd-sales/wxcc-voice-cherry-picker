@@ -3,7 +3,7 @@
 Hosts a widget which will function inside of Contact Center Agent Desktop that allows a Webex CC agent to cherry pick queued voice calls utilizing the Get Tasks and Assign Task APIs.   
 
 ## Demo
-[![Vidcast Overview](https://github.com/user-attachments/assets/6ef4337f-510e-4a22-aed8-ad21e85df614)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
+[![Vidcast Overview](https://github.com/user-attachments/assets/a4d42315-5ea6-4a1e-b080-496abe5e55f0)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
 
 
 
@@ -30,7 +30,7 @@ To understand how to interact with our Desktop Layout, please watch the video an
   - i. ```HOST_URI="http://localhost:5000"```
   - ii. ```HOST_URI="https://your.server.com"```
 
-### 3.a. Running the widget webserver as a container (Docker) (recommended)
+### 2.a. Running the widget webserver as a container (Docker) (recommended)
 
 - If you prefer to run this through ```npm```, skip this step and proceed to 3.b.
 - Otherwise, run the following commands from the terminal inside your project's root directory:
@@ -38,7 +38,7 @@ To understand how to interact with our Desktop Layout, please watch the video an
 - `docker run -p 5000:5000 -i -t wxcc-voice-cherry-picker`
   - replace `5000` in both places with the ```PORT``` used in your `.env` file.  
 
-### 3.b. Running the widget webserver (npm)
+### 2.b. Running the widget webserver (npm)
 _Node.js version >= 21.5 must be installed on the system in order to run this through npm._
 
 - It is recommended that you run this as a container (step 3.a.).
@@ -49,7 +49,7 @@ _Node.js version >= 21.5 must be installed on the system in order to run this th
 - This should run the app on your ```PORT``` (from .env file)
 
 
-### 4. Wire Up the Widget to the Layout:
+### 3. Wire Up the Widget to the Layout:
 
 - You must replace the url on line 108 of the **_callControlWidget.json_** file with your correct server endpoint. For examples:
   - "script": "http://localhost:5000/build/bundle.js",
