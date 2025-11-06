@@ -56,7 +56,7 @@ _Node.js version >= 21.5 must be installed on the system in order to run this th
   - "script": "https://your.webserver.com/build/bundle.js",
 - This should be based on the ```HOST_URI``` in your .env file + ```/build/bundle.js```.
   
-- Upload the **_callControlWidget.json_** file onto your Administration Portal **[WebexCC Portal - US](https://portal.wxcc-us1.cisco.com/portal/home.html#)**
+- Upload the **_cherryPickerWidget.json_** file onto your Administration Portal **[WebexCC Portal - US](https://portal.wxcc-us1.cisco.com/portal/home.html#)**
   - _link above is referencing the US portal link please change if you are in different geo (us1, eu1, eu2, anz1)_
   - Note that Layouts are configured per Agent Team.
 - Log in to your agent and select the right Team to view the new layout.
