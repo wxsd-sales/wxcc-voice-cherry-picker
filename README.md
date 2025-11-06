@@ -1,21 +1,20 @@
-# Contact Center Meeting Transfer Widget
+# Contact Center Voice Call Cherry Picker Widget
 
-Hosts a widget which will function inside of Contact Center Agent Desktop that allows a Webex CC agent to transfer an inbound or outbound call into a Webex Meeting.
+Hosts a widget which will function inside of Contact Center Agent Desktop that allows a Webex CC agent to cherry pick queued voice calls utilizing the Get Tasks and Assign Task APIs.   
 
 ## Demo
-[![Vidcast Overview](https://github.com/user-attachments/assets/6ef4337f-510e-4a22-aed8-ad21e85df614)](https://app.vidcast.io/share/0c09be13-7ec8-4ae5-b26f-5506a54cd863)
+[![Vidcast Overview](https://github.com/user-attachments/assets/6ef4337f-510e-4a22-aed8-ad21e85df614)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
 
 
 
 ## Developer Documentation
 
-**https://developer.webex-cx.com/documentation/guides/desktop**  
-**https://developer.webex.com/docs/api/v1/call-controls**
+**https://developer.webex.com/webex-contact-center/docs/api/v1/tasks-call-control**  
 
 ## Getting Started
 
 - Clone this repository:
-- ```git clone https://github.com/wxsd-sales/cc-meeting-transfer-widget.git```
+- ```git clone https://github.com/wxsd-sales/wxcc-voice-cherry-picker/.git```
 
 The widget can be hosted locally for testing on the same machine as the agent desktop.  However, you will want to deploy this to a webserver with an SSL certificate when going live.
 
@@ -23,28 +22,11 @@ To understand how to interact with our Desktop Layout, please watch the video an
 
 ## Installation
 
-### 1. Setting up the Webex Integration
-
-* a. [Create a new Webex Oauth "Integration"](https://developer.webex.com/my-apps/new)
-  * i. The creator/owner of the integration does not matter, but must have a Webex account.
-  * ii. You can give it any name ("Contact Center Meeting Transfer Widget") and any 512x512 icon - the Agents signing into it will only ever see the name and icon the first time signing in.
-* b. The redirect URI of the integration must be ```YOURSERVERURL/auth```, examples:
-  * i. ```http://localhost:5000/auth```
-  * ii. ```https://your.server.com/auth```
-* c. Whatever your server address, you will need this again in the next steps (just the base url, NOT including "/auth").
-* d. The Scopes selected must be:
-  * ```spark:calls_read```
-  * ```spark:calls_write```
-  * ```spark:people_read```
-  * ```spark:xsi```
-* e. Save the client_id, and client_secret for the next step
-
-### 2. Setting up the .env file
+### 1. Set up the .env file
 - a. Inside this project's root folder, rename the file ```.env.example``` to ```.env```
 - b. In a text editor, open the ```.env```
 - c. Choose a ```PORT``` or use ```PORT=5000``` if you are not sure what to use.
-- d. Paste the client_id and client_secret values from step 1 to the right of the ```=``` for the corresponding ```CLIENT_ID=``` and ```CLIENT_SECRET=``` variables.
-- e. Paste your base url for your server between the double quotes of ```HOST_URI=""```.  If referring to examples from step 1, then either:
+- d. Paste your base url for your server between the double quotes of ```HOST_URI=""```.  If referring to examples from step 1, then either:
   - i. ```HOST_URI="http://localhost:5000"```
   - ii. ```HOST_URI="https://your.server.com"```
 
@@ -52,18 +34,18 @@ To understand how to interact with our Desktop Layout, please watch the video an
 
 - If you prefer to run this through ```npm```, skip this step and proceed to 3.b.
 - Otherwise, run the following commands from the terminal inside your project's root directory:
-- `docker build -t cc-meeting-transfer-widget .`
-- `docker run -p 5000:5000 -i -t cc-meeting-transfer-widget`
+- `docker build -t wxcc-voice-cherry-picker .`
+- `docker run -p 5000:5000 -i -t wxcc-voice-cherry-picker`
   - replace `5000` in both places with the ```PORT``` used in your `.env` file.  
 
 ### 3.b. Running the widget webserver (npm)
-_Node.js version >= 14.5 must be installed on the system in order to run this through npm._
+_Node.js version >= 21.5 must be installed on the system in order to run this through npm._
 
 - It is recommended that you run this as a container (step 3.a.).
 - If you do not wish to run the webserver as a container (Docker), proceed with this step:
 - Inside this project on your terminal type: `npm install`
 - Then inside this project on your terminal type: `npm run build`
-- Then inside this project on your terminal type: `npm run dev`
+- Then inside this project on your terminal type: `npm start`
 - This should run the app on your ```PORT``` (from .env file)
 
 
@@ -97,4 +79,4 @@ Everything included is for demo and Proof of Concept purposes only. Use of the s
  
 ## Support
 
-Please contact the Webex SD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=CCMeetingTransferWidget) for questions. Or for Cisco internal, reach out to us on Webex App via our bot globalexpert@webex.bot & choose "Engagement Type: API/SDK Proof of Concept Integration Development". 
+Please contact the Webex SD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=CCCherryPickerWidget) for questions. Or for Cisco internal, reach out to us on Webex App via our bot globalexpert@webex.bot & choose "Engagement Type: API/SDK Proof of Concept Integration Development". 
