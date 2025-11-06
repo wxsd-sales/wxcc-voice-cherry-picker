@@ -5,7 +5,8 @@ Hosts a widget which will function inside of Contact Center Agent Desktop that a
 ## Demo
 [![Vidcast Overview](https://github.com/user-attachments/assets/a4d42315-5ea6-4a1e-b080-496abe5e55f0)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
 
-
+<img width="470" height="733" alt="Image" src="https://github.com/user-attachments/assets/3f1025bf-14d0-48a2-84be-4628d8071fa9" />
+<img width="380" height="476" alt="Image" src="https://github.com/user-attachments/assets/3f692e06-51f8-4ca4-8050-53723832a5d3" />
 
 ## Developer Documentation
 
