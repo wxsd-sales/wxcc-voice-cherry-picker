@@ -30,8 +30,12 @@ To understand how to interact with our Desktop Layout, please watch the video an
 - d. Paste your base url for your server between the double quotes of ```HOST_URI=""```.  If referring to examples from step 1, then either:
   - i. ```HOST_URI="http://localhost:5000"```
   - ii. ```HOST_URI="https://your.server.com"```
+ 
+### 2. Configure the CC Queue Flow
+In Control Hub, you will need to modify the flow if you want the voice calls to appear in the widget immediately (you can skip this step, but new tasks (calls) will then only appear every 5 seconds on an interval.
+-
 
-### 2.a. Running the widget webserver as a container (Docker) (recommended)
+### 3.a. Running the widget webserver as a container (Docker) (recommended)
 
 - If you prefer to run this through ```npm```, skip this step and proceed to 3.b.
 - Otherwise, run the following commands from the terminal inside your project's root directory:
@@ -39,7 +43,7 @@ To understand how to interact with our Desktop Layout, please watch the video an
 - `docker run -p 5000:5000 -i -t wxcc-voice-cherry-picker`
   - replace `5000` in both places with the ```PORT``` used in your `.env` file.  
 
-### 2.b. Running the widget webserver (npm)
+### 3.b. Running the widget webserver (npm)
 _Node.js version >= 21.5 must be installed on the system in order to run this through npm._
 
 - It is recommended that you run this as a container (step 3.a.).
@@ -50,7 +54,7 @@ _Node.js version >= 21.5 must be installed on the system in order to run this th
 - This should run the app on your ```PORT``` (from .env file)
 
 
-### 3. Wire Up the Widget to the Layout:
+### 4. Wire Up the Widget to the Layout:
 
 - You must replace the url on line 108 of the **_cherryPickerWidget.json_** file with your correct server endpoint. For examples:
   - "script": "http://localhost:5000/build/bundle.js",
