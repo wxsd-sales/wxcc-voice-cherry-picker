@@ -48,7 +48,20 @@ In Control Hub, you will need to modify the flow if you want the voice calls to 
 ### 3. Update the Queue and MMP manuallyAssignable properties.
 - In order for the Get/Assign Task APIs to function for the voice queue properly, you may need to edit the "manuallyAssignable" properties of the Queue, and the MultiMedia Profile associated with the Agent's Desktop.
 - The code does not include this, but you can do so manually with the API through something like Bruno or Postman.
-- 
+- a. Update the Service Queue to include ```"manuallyAssignable":true,```
+  - Retrieve [GET Service Queue Details](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/get-specific-contact-service-queue-by-id)
+  - Update [PUT Service Queue Details](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/update-specific-contact-service-queue-by-id)
+- b. Update the MMP For the Agent's Desktop to include "manuallyAssignable.telephony" : 1, for example:
+  - ```
+     "manuallyAssignable": {
+        "telephony": 1,
+        "chat": 0,
+        "email": 0,
+        "social": 0
+      },
+    ```
+  - Retrieve [GET MMP](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/get-specific-multimedia-profile-by-id)
+  - Update [PUT MMP](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/update-specific-multimedia-profile-by-id)
   
 ### 4.a. Running the widget webserver as a container (Docker) (recommended)
 
