@@ -1,0 +1,8 @@
+.DS_STORE
+.env
+prod.env
+package-lock.json
+cherryPickerWidgetPROD.json
+notes
+*.yaml
+node_modules/
