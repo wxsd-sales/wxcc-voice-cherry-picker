@@ -82,10 +82,6 @@ template.innerHTML = `
     outline: none;
   }
 
-  legend {
-    color: #064157;
-  }
-
   button:hover:enabled{
     cursor: pointer;
   }
@@ -499,7 +495,6 @@ class myDesktopSDK extends HTMLElement {
 
   async getTasks(self){
     try{
-        //TODO: uncomment? 30 minutes good?
         //const pastSeconds = 1800; //1800 seconds = 30 minutes;
         const pastSeconds = 600;
         const fromEpochSeconds = Math.floor(Date.now()) - (pastSeconds * 1000);
@@ -560,11 +555,6 @@ class myDesktopSDK extends HTMLElement {
               }
           }
         }
-          
-          //TODOs:    https://desktop.wxcc-us1.cisco.com/cherry-picker
-          //          e. Call back for abandoned tasks?
-        
-        
     } catch(e){
       customLog('getTasks Error:');
       customLog(e);
@@ -682,7 +672,6 @@ class myDesktopSDK extends HTMLElement {
 
     loadContent(){
       try{
-        //TODO:This should really be like sub 5 seconds...
         const checkSeconds = 5
         let self = this;
 
@@ -692,42 +681,6 @@ class myDesktopSDK extends HTMLElement {
             this.shadowRoot.getElementById(filter).checked = false;
           }
         }
-
-        // const sampleTask = {
-        //     "queue": {
-        //         "id": "2023db06-968b-4f25-9b3c-65e20ce532c0",
-        //         "name": "TaylorQueue1"
-        //     },
-        //     "channelType": "telephony",
-        //     "status": "abandoned",
-        //     "createdTime": 1760717140706,
-        //     "lastUpdatedTime": 1760717150946,
-        //     "captureRequested": false,
-        //     "origin": "+14074155779",
-        //     "destination": "+14075574701",
-        //     "direction": "inbound"
-        // }
-        // const sampleTask2 = {
-        //     "queue": {
-        //         "id": "2023db06-968b-4f25-9b3c-65e20ce532c0",
-        //         "name": "TaylorQueue1"
-        //     },
-        //     "channelType": "telephony",
-        //     "status": "queued",
-        //     "createdTime": 1760717140706,
-        //     "lastUpdatedTime": 1760717150946,
-        //     "captureRequested": false,
-        //     "origin": "+14074155779",
-        //     "destination": "+14075574701",
-        //     "direction": "inbound"
-        // }
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789012", sampleTask);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789013", sampleTask2);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789014", sampleTask);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789015", sampleTask);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789016", sampleTask2);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789017", sampleTask);
-        // self.addTask("abcdefgh-1234-abcd-zyxw-123456789018", sampleTask2);
 
         setTimeout(async function(){
           await self.getTasks(self);
