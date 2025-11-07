@@ -5,8 +5,7 @@ Hosts a widget which will function inside of Contact Center Agent Desktop that a
 ## Demo
 [![Vidcast Overview](https://github.com/user-attachments/assets/a4d42315-5ea6-4a1e-b080-496abe5e55f0)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
 
-<img width="470" height="733" alt="Image" src="https://github.com/user-attachments/assets/3f1025bf-14d0-48a2-84be-4628d8071fa9" />
-<img width="380" height="476" alt="Image" src="https://github.com/user-attachments/assets/3f692e06-51f8-4ca4-8050-53723832a5d3" />
+
 
 ## Developer Documentation
 
@@ -33,20 +32,36 @@ To understand how to interact with our Desktop Layout, please watch the video an
  
 ### 2. Configure the CC Queue Flow
 In Control Hub, you will need to modify the flow if you want the voice calls to appear in the widget immediately (you can skip this step, but new tasks (calls) will then only appear every 5 seconds on an interval.
--
+- a. If you don't already have a Queue Flow, you can import this flow as an example.
+    - [flow/GenericCherryPickerFlow.json](flow/GenericCherryPickerFlow.json)
+- b. If you already have a flow, the primary thing you will want to add will be an HTTP Request node (near the beginning of the flow, but after the New Phone Contact).  
+- c. With either a. or b., you will need to configure the HTTP Request node as a POST request to your ```HOST_URI``` (a public URL is required here, localhost will not work).
+    - The Request Body should be:
+    - ```
+      {"ANI":"{{NewPhoneContact.ANI}}", "DNIS":"{{NewPhoneContact.DNIS}}", "PSTNRegion":"{{NewPhoneContact.PSTNRegion}}", "EntryPointId":"{{NewPhoneContact.EntryPointId}}", "FlowId":"{{NewPhoneContact.FlowId}}", "InteractionId":"{{NewPhoneContact.InteractionId}}", "OrgId":"{{NewPhoneContact.OrgId}}", "FlowVersionLabel":"{{NewPhoneContact.FlowVersionLabel}}", "Headers":"{{NewPhoneContact.Headers}}", "CallbackType":"{{NewPhoneContact.CallbackType}}", "CallbackReason":"{{NewPhoneContact.CallbackReason}}", "ScheduleSourceInteractionId":"{{NewPhoneContact.ScheduleSourceInteractionId}}"} 
+      ```
+- d. Screenshots that may assist with the setup:  
+  <img width="318" height="495" alt="Image" src="https://github.com/user-attachments/assets/3f1025bf-14d0-48a2-84be-4628d8071fa9" />
+  <img width="380" height="476" alt="Image" src="https://github.com/user-attachments/assets/3f692e06-51f8-4ca4-8050-53723832a5d3" />
 
-### 3.a. Running the widget webserver as a container (Docker) (recommended)
 
-- If you prefer to run this through ```npm```, skip this step and proceed to 3.b.
+### 3. Update the Queue and MMP manuallyAssignable properties.
+- In order for the Get/Assign Task APIs to function for the voice queue properly, you may need to edit the "manuallyAssignable" properties of the Queue, and the MultiMedia Profile associated with the Agent's Desktop.
+- The code does not include this, but you can do so manually with the API through something like Bruno or Postman.
+- 
+  
+### 4.a. Running the widget webserver as a container (Docker) (recommended)
+
+- If you prefer to run this through ```npm```, skip this step and proceed to 4.b.
 - Otherwise, run the following commands from the terminal inside your project's root directory:
 - `docker build -t wxcc-voice-cherry-picker .`
 - `docker run -p 5000:5000 -i -t wxcc-voice-cherry-picker`
   - replace `5000` in both places with the ```PORT``` used in your `.env` file.  
 
-### 3.b. Running the widget webserver (npm)
+### 4.b. Running the widget webserver (npm)
 _Node.js version >= 21.5 must be installed on the system in order to run this through npm._
 
-- It is recommended that you run this as a container (step 3.a.).
+- It is recommended that you run this as a container (step 4.a.).
 - If you do not wish to run the webserver as a container (Docker), proceed with this step:
 - Inside this project on your terminal type: `npm install`
 - Then inside this project on your terminal type: `npm run build`
@@ -54,7 +69,7 @@ _Node.js version >= 21.5 must be installed on the system in order to run this th
 - This should run the app on your ```PORT``` (from .env file)
 
 
-### 4. Wire Up the Widget to the Layout:
+### 5. Wire Up the Widget to the Layout:
 
 - You must replace the url on line 108 of the **_cherryPickerWidget.json_** file with your correct server endpoint. For examples:
   - "script": "http://localhost:5000/build/bundle.js",
