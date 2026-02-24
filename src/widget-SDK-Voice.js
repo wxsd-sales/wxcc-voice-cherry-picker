@@ -4,8 +4,13 @@ import { Desktop } from "@wxcc-desktop/sdk";
 const template = document.createElement("template");
 var loaded = false;
 
-function customLog(msg, args){
+function customLog(msg, args, logNameSuffix){
   let logName = "cc-widget-logger:"
+  if(logNameSuffix){
+    logName += logNameSuffix + ":";
+  } else {
+    logName += "default:";
+  }
   if(args){
     console.log(logName+ msg, args);  
   } else {
@@ -26,7 +31,9 @@ template.innerHTML = `
   .button-loading-icon {
     position: relative;
     width: 20px;
-    transform: translate(-45px, 5px);
+    left: 45px;
+    top: 3px;
+    /*transform: translate(-45px, 5px);*/
   }
 
   .invisible {
@@ -44,7 +51,7 @@ template.innerHTML = `
   }
 
   .fieldset {
-    width: 450px;
+    width: 550px;
     border-radius: 5px;
     max-height:675px;
     overflow:scroll;
@@ -147,17 +154,117 @@ template.innerHTML = `
     margin-left: 10px;
   }
 
-  .flat-rounded-button:hover {
+  .flat-rounded-button:hover:enabled {
     background-color: #59c959; /* Darker background on hover */
   }
 
-  .flat-rounded-button:active {
+  .flat-rounded-button:active:enabled {
     background-color: #459945; /* Even darker background on click */
+  }
+
+  .flat-rounded-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .flat-rounded-conference-button {
+    background-color: #0d6efd; /* Blue-ish color */
+    color: white;
+    border: none;
+    padding: 5px 15px;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, opacity 0.3s ease;
+    margin-left: 10px;
+  }
+
+  .flat-rounded-conference-button:hover:enabled {
+    background-color: #0b5ed7; /* Darker blue on hover */
+  }
+
+  .flat-rounded-conference-button:active:enabled {
+    background-color: #0a58ca; /* Even darker blue on click */
+  }
+
+  .flat-rounded-conference-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .checkbox-container {
     display: inline-block;
     margin-right: 15px; /* Adjust spacing as needed */
+  }
+
+  #mainContainer {
+    display: flex;
+    gap: 20px;
+  }
+
+  #merge-panel {
+    min-width: 250px;
+    max-width: 300px;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+    background-color: white;
+    align-self: flex-start;
+  }
+
+  #merge-panel h3 {
+    margin-top: 0;
+    color: #064157;
+    font-size: 18px;
+  }
+
+  #merge-panel .merge-info {
+    margin: 15px 0;
+    padding: 10px;
+    background-color: #f0f8ff;
+    border-radius: 5px;
+    border-left: 3px solid #064157;
+  }
+
+  #merge-panel .merge-info label {
+    font-weight: bold;
+    color: #064157;
+    font-size: 12px;
+    display: block;
+    margin-bottom: 5px;
+  }
+
+  #merge-panel .merge-info .number {
+    font-size: 16px;
+    color: #005E7D;
+    font-weight: 600;
+  }
+
+  #merge-button {
+    width: 100%;
+    background-color: #6aeb6a;
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    margin-top: 10px;
+  }
+
+  #merge-button:hover:enabled {
+    background-color: #59c959;
+  }
+
+  #merge-button:active:enabled {
+    background-color: #459945;
+  }
+
+  #merge-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background-color: #cccccc;
   }
 
   </style>
@@ -190,6 +297,14 @@ template.innerHTML = `
           </div>
         </div>
       </div>
+      <div id="merge-panel" class="invisible">
+        <h3>Merge Calls</h3>
+        <div class="merge-info">
+          <label>Caller Number:</label>
+          <div class="number" id="merge-caller-number">-</div>
+        </div>
+        <button id="merge-button">Merge</button>
+      </div>
     </div>
 `;
 
@@ -200,6 +315,14 @@ var initResult = false;
 var queueTasks = {};
 var callerIds = {};
 var queueStatuses = ["queued", "assigned", "abandoned", "completed"];
+var agentIsOnCall = false;
+var socket;
+var currentCall;
+var previousCall;
+var previousCallNumber;
+var trackedTransferPayload;
+var showMergePanel = false;
+var currentWidgetInstance = null;
 
 function addOrReplaceEventListener(element, eventName, newListener) {
   // Check if an event listener with the same name already exists
@@ -262,7 +385,7 @@ class myDesktopSDK extends HTMLElement {
     let self = this;
     socketIOSDK.onload = function(){
         customLog("loaded socket.io.min.js");
-        var socket = io(process.env.HOST_URI,{
+        socket = io(process.env.HOST_URI,{
             withCredentials: true,
               auth: {
                 "agentId": Desktop.agentContact.SERVICE.conf.profile.agentId,
@@ -314,26 +437,93 @@ class myDesktopSDK extends HTMLElement {
       customLog("claimButtonClicked:");
       customLog(event);
       let taskId = event.id.split("-button")[0];
-      this.shadowRoot.getElementById(event.id).classList.add("invisible");
-      this.shadowRoot.getElementById(taskId+"-loading").classList.remove("invisible");
+      const claimButton = this.shadowRoot.getElementById(event.id);
+      const loadingIcon = this.shadowRoot.getElementById(taskId+"-loading");
+      
+      claimButton.style.display = "none";
+      loadingIcon.classList.remove("invisible");
       customLog(taskId);
+      
       setTimeout(function(){
-        self.shadowRoot.getElementById(taskId+"-loading").classList.add("invisible");
+        loadingIcon.classList.add("invisible");
         try{
           customLog(`status of ${taskId} after claim:`)
           customLog(queueTasks[taskId].status);
           if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
-            self.shadowRoot.getElementById(taskId+"-button").classList.remove("invisible");
+            claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
           }
         }catch(ex){
           customLog("claimButton Timeout error:");
           customLog(ex);
-          self.shadowRoot.getElementById(taskId+"-button").classList.remove("invisible");
+          claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
         }
       },10000);
       await self.assignTask(taskId);
     }catch(e){
       customLog("claimButtonClicked Error:");
+      customLog(e);
+    }
+  }
+
+  async conferenceButtonClick(self, event){
+    try{
+      customLog("conferenceButtonClick:");
+      customLog(event);
+      let taskId = event.id.split("-conference-button")[0];
+      const conferenceButton = this.shadowRoot.getElementById(event.id);
+      const loadingIcon = this.shadowRoot.getElementById(taskId+"-loading");
+      
+      conferenceButton.style.display = "none";
+      loadingIcon.classList.remove("invisible");
+      customLog(taskId);
+      
+      setTimeout(function(){
+        loadingIcon.classList.add("invisible");
+        try{
+          customLog(`status of ${taskId} after conference click:`)
+          customLog(queueTasks[taskId].status);
+          if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
+            conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+          }
+        }catch(ex){
+          customLog("conferenceButton Timeout error:");
+          customLog(ex);
+          conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+        }
+      },10000);
+      const interaction = await this.getInteraction();
+      customLog(interaction);
+      customLog("interaction.contactDirection.type:", interaction.contactDirection?.type);
+      var trackNumber = interaction.callAssociatedDetails.ani;
+      if(interaction.contactDirection?.type === "OUTBOUND"){
+        trackNumber = interaction.callAssociatedDetails.dn;
+      }
+      customLog("interaction trackNumber:", trackNumber);
+      const transferTaskId = interaction.interactionId;
+      trackedTransferPayload = {
+        command: "transfer-hold",
+        owner: interaction.owner,
+        transferTaskId: transferTaskId,
+        number: trackNumber,
+        agentNumber: window.agentDetails?.extension,
+        direction: interaction.contactDirection
+      };
+      socket.emit("message", trackedTransferPayload);
+      previousCallNumber = trackNumber;
+      
+      // Show merge panel
+      showMergePanel = true;
+      const mergePanel = self.shadowRoot.getElementById('merge-panel');
+      const mergeCallerNumber = self.shadowRoot.getElementById('merge-caller-number');
+      if (mergePanel && mergeCallerNumber) {
+        mergeCallerNumber.textContent = trackNumber;
+        mergePanel.classList.remove('invisible');
+      }
+      await self.transferTask("10070", transferTaskId);
+      await self.wrapUpTask(transferTaskId);
+      await self.assignTask(taskId);
+    }catch(e){
+      customLog("conferenceButtonClick Error:");
       customLog(e);
     }
   }
@@ -347,8 +537,8 @@ class myDesktopSDK extends HTMLElement {
 
   addTask(taskId, task){
     try{
-      customLog('addTask, task:');
-      customLog(task);
+      customLog('addTask, task:', null, "task-loop");
+      customLog(task, null, "task-loop");
       const card = document.createElement("div");
       card.id = taskId;
       card.dataset.updated = `${task.lastUpdatedTime}`;
@@ -375,29 +565,46 @@ class myDesktopSDK extends HTMLElement {
           callerName = callerName.split("}")[0];
           callerName = `(${callerName})`
         } catch(ex){
-          customLog('addTask callerId split error:');
-          customLog(ex);
+          customLog('addTask callerId split error:', null, "task-loop");
+          customLog(ex, null, "task-loop");
         }
       }
       const row1 = document.createElement("tr");
       row1.innerHTML = `<td class="column-one origin-cell"><h4><b>${task.origin}</b></h4></td><td><h4>${callerName}</h4></td>`
       const lastCell = document.createElement("td");
       if(["queued", "created"].indexOf(task.status) >= 0){
+        let self = this;
+
+        // Create Claim button
         const claimButton = document.createElement("button");
         claimButton.id = taskId + "-button";
         claimButton.classList.add("flat-rounded-button");
         claimButton.innerHTML = "Claim";
-        let self = this;
+        claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
         claimButton.addEventListener('click', async function(event){
           await self.claimButtonClick(self, this)
         });
         lastCell.appendChild(claimButton);
+
+        // Create Conference button
+        const conferenceButton = document.createElement("button");
+        conferenceButton.id = taskId + "-conference-button";
+        conferenceButton.classList.add("flat-rounded-conference-button");
+        conferenceButton.innerHTML = "Conference";
+        conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+        conferenceButton.addEventListener('click', async function() {
+          await self.conferenceButtonClick(self, this);
+        });
+        lastCell.appendChild(conferenceButton);
+
+        // Single loading icon for both buttons
         const loadingImg = document.createElement("img");
         loadingImg.id = taskId+"-loading";
         loadingImg.src = `${process.env.HOST_URI}/img/loading-1.gif`;
         loadingImg.classList.add("button-loading-icon");
         loadingImg.classList.add("invisible");
         lastCell.appendChild(loadingImg);
+        
       }
       row1.appendChild(lastCell);
       table.appendChild(row1);
@@ -419,9 +626,9 @@ class myDesktopSDK extends HTMLElement {
         card.classList.add("hidden");
       }
 
-      customLog(this.shadowRoot.getElementById("my-queue"))
+      customLog(this.shadowRoot.getElementById("my-queue"), null, "task-loop");
       this.shadowRoot.getElementById("my-queue").prepend(card);
-      customLog(`appended task ${taskId} to my-queue`);
+      customLog(`appended task ${taskId} to my-queue`, null, "task-loop");
       
       if(!statusType || statusType.checked){
         setTimeout(function(){
@@ -429,15 +636,15 @@ class myDesktopSDK extends HTMLElement {
         },100);
       }
     }catch(e){
-      customLog(`addTask Error:`);
-      customLog(e);
+      customLog(`addTask Error:`, null, "task-loop");
+      customLog(e, null, "task-loop");
     }  
   }
 
   updateTask(taskId, task){
     try{
-      customLog('updateTask, task:');
-      customLog(task);
+      customLog('updateTask, task:', null, "task-loop");
+      customLog(task, null, "task-loop");
       const card = this.shadowRoot.getElementById(taskId);
       card.dataset.updated = `${task.lastUpdatedTime}`;
       this.shadowRoot.getElementById(taskId+"-status").innerText = capitalizeFirstLetter(task.status);
@@ -451,11 +658,15 @@ class myDesktopSDK extends HTMLElement {
         this.shadowRoot.getElementById(taskId+"-container").classList.add('faded');
         let button = this.shadowRoot.getElementById(taskId+"-button");
         let loadingIcon = this.shadowRoot.getElementById(taskId+"-loading");
+        let conferenceButton = this.shadowRoot.getElementById(taskId+"-conference-button");
         if(button){
-          button.classList.add("invisible");
+          button.style.display = "none";
         }
         if(loadingIcon){
           loadingIcon.classList.add("invisible");
+        }
+        if(conferenceButton){
+          conferenceButton.style.display = "none";
         }
       } else {
         if(task.status !== card.dataset.status){
@@ -475,6 +686,80 @@ class myDesktopSDK extends HTMLElement {
     setTimeout(function(){
       card.remove();
     },500);
+  }
+
+  updateButtonStates(isOnCall){
+    agentIsOnCall = isOnCall;
+    
+    // Only update buttons on cards that are still queued (active); leave deactivated cards alone
+    const confButtons = this.shadowRoot.querySelectorAll('[id$="-conference-button"]');
+    confButtons.forEach(button => {
+      const taskId = button.id.split("-conference-button")[0];
+      const card = this.shadowRoot.getElementById(taskId);
+      if (!card || card.dataset.status !== "queued") return; // Deactivated card: don't touch
+      const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
+      if(!loadingIcon || loadingIcon.classList.contains("invisible")){
+        button.style.display = isOnCall ? "inline-block" : "none";
+      }
+    });
+    
+    const claimButtons = this.shadowRoot.querySelectorAll('.flat-rounded-button');
+    claimButtons.forEach(button => {
+      const taskId = button.id.split("-button")[0];
+      const card = this.shadowRoot.getElementById(taskId);
+      if (!card || card.dataset.status !== "queued") return; // Deactivated card: don't touch
+      const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
+      if(!loadingIcon || loadingIcon.classList.contains("invisible")){
+        button.style.display = isOnCall ? "none" : "inline-block";
+      }
+    });
+    
+    customLog(`Updated buttons: agentIsOnCall = ${isOnCall}`);
+  }
+
+  async wrapUpTask(taskId){
+    customLog(`wrapUpTask taskId:${taskId}`);
+    try{
+      const wrapUpResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks/${taskId}/wrapup`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          "auxCodeId": "859de2b3-9767-4b70-b380-cee9785656d5",
+          "wrapUpReason": "Conference"
+        })
+      });
+      customLog(`wrapUpResp.status:${wrapUpResp.status}`);
+    }catch(e){
+      customLog("wrapUpTask Error:");
+      customLog(e);
+    }
+  }
+
+  async transferTask(extension, taskId){
+    customLog(`transferTask extension:${extension}`);
+    customLog(`transferTask taskId:${taskId}`); 
+    try{
+      const transferResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks/${taskId}/transfer`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          "to": extension,
+          "destinationType": "dialNumber"
+        })
+      });
+      customLog(`transferResp.status:${transferResp.status}`);
+      return taskId;
+    }catch(e){
+      customLog("transferTask Error:");
+      customLog(e);
+      return null;
+    }
   }
 
   async assignTask(taskId){
@@ -505,9 +790,9 @@ class myDesktopSDK extends HTMLElement {
             'Content-Type': 'application/json'
           }
         });
-        customLog(`tasksResp.status:${tasksResp.status}`);
+        customLog(`tasksResp.status:${tasksResp.status}`, null, "task-loop");
         let json = await tasksResp.json();
-        customLog(json);
+        customLog(json, null, "task-loop");
         let tempTasks = {};
         if(json.data?.length > 0){
           let missingCallerIdTasks = [];
@@ -527,16 +812,16 @@ class myDesktopSDK extends HTMLElement {
             window.callerIds = callerIds;
           }
 
-          customLog('tempTasks');
-          customLog(tempTasks);
+          customLog('tempTasks', null, "task-loop");
+          customLog(tempTasks, null, "task-loop");
 
           for(let task of Object.keys(tempTasks)){
             let existingCard = self.shadowRoot.getElementById(task)
             if(existingCard){
-              customLog('updateTask', task);
+              customLog('updateTask', task, "task-loop");
               self.updateTask(task, tempTasks[task]);
             } else {
-              customLog('newTask', task);
+              customLog('newTask', task, "task-loop");
               self.addTask(task, tempTasks[task]);
             }
           }
@@ -670,7 +955,7 @@ class myDesktopSDK extends HTMLElement {
   }
 
 
-    loadContent(){
+    async loadContent(){
       try{
         const checkSeconds = 5
         let self = this;
@@ -682,14 +967,71 @@ class myDesktopSDK extends HTMLElement {
           }
         }
 
+        // Check if agent is already on a call and set initial state
+        const currentTaskMap = await Desktop.actions.getTaskMap();
+        const isOnCall = currentTaskMap.size > 0;
+        customLog(`Initial call state - isOnCall: ${isOnCall}`);
+        this.updateButtonStates(isOnCall);
+
         setTimeout(async function(){
           await self.getTasks(self);
         }, 100);
         setInterval(async function(){
           await self.getTasks(self);
         }, checkSeconds * 1000);
+
+        // Periodically check and update button states to stay in sync
+        setInterval(async function(){
+          const currentTaskMap = await Desktop.actions.getTaskMap();
+          const isOnCall = currentTaskMap.size > 0;
+          if(isOnCall !== agentIsOnCall){
+            customLog(`Button state sync - updating to ${isOnCall}`);
+            self.updateButtonStates(isOnCall);
+          }
+        }, 1000); // Check every second
         
         this.showQueueDiv();
+        
+        // Setup merge button handler (must be done every time widget loads)
+        const mergeButton = this.shadowRoot.getElementById('merge-button');
+        if (mergeButton) {
+          mergeButton.addEventListener('click', async function() {
+            customLog("Merge button clicked");
+            
+            if (!trackedTransferPayload) {
+              customLog("No trackedTransferPayload available");
+              return;
+            }
+            
+            // Disable button for 10 seconds
+            mergeButton.disabled = true;
+            setTimeout(() => {
+              mergeButton.disabled = false;
+            }, 10000);
+            
+            // Send socket message with transfer-merge command
+            const mergePayload = {
+              ...trackedTransferPayload,
+              command: "transfer-merge"
+            };
+            
+            customLog("Sending transfer-merge message:", mergePayload);
+            socket.emit("message", mergePayload);
+          });
+          customLog("Merge button handler initialized");
+        }
+        
+        // Restore merge panel state if needed (after widget reload)
+        if (showMergePanel && trackedTransferPayload) {
+          customLog("Restoring merge panel state after widget reload");
+          const mergePanel = this.shadowRoot.getElementById('merge-panel');
+          const mergeCallerNumber = this.shadowRoot.getElementById('merge-caller-number');
+          if (mergePanel && mergeCallerNumber) {
+            mergeCallerNumber.textContent = trackedTransferPayload.number || previousCallNumber;
+            mergePanel.classList.remove('invisible');
+            customLog("Merge panel restored with number:", trackedTransferPayload.number);
+          }
+        }
       }catch(e){
         customLog("loadContent Error:");
         customLog(e);
@@ -700,6 +1042,8 @@ class myDesktopSDK extends HTMLElement {
   async connectedCallback() {
     try{
       customLog("connectedCallback")
+      // Update the global reference to the current widget instance
+      currentWidgetInstance = this;
       await this.init();
       customLog("initResult:");
       customLog(initResult);
@@ -742,8 +1086,111 @@ class myDesktopSDK extends HTMLElement {
             customLog(loadingIcon);
             loadingIcon.classList.add("invisible");
         });
+
+        // Enable Conference buttons when agent answers a call
+        Desktop.agentContact.addEventListener('eAgentContactAssigned', (contact) => {
+            customLog('Agent answered call - enabling Conference buttons');
+            self.updateButtonStates(true); // Agent is on call
+        });
+
+        // Disable Conference buttons when agent's call ends
+        Desktop.agentContact.addEventListener('eAgentContactEnded', (contact) => {
+            customLog('Agent call ended - disabling Conference buttons');
+            self.updateButtonStates(false); // Agent is not on call
+        });
+
+        // Also handle when agent wraps up (task ends)
+        Desktop.agentContact.addEventListener('eAgentWrapup', (contact) => {
+            customLog('Agent entered wrapup - disabling Conference buttons');
+            self.updateButtonStates(false); // Agent is not on call
+        });
+
+        // Handle when contact ends
+        Desktop.agentContact.addEventListener('eContactEnded', (contact) => {
+            customLog('Contact ended - disabling Conference buttons');
+            self.updateButtonStates(false); // Agent is not on call
+        });
         
         this.loadContent();
+
+        webexService.meetings.register().then(res => {
+          customLog("webexService.meetings.register() done!");
+          try{
+            webexService.internal.mercury.connect().then(() => {
+                customLog("Mercury Connected.");
+
+                webexService.internal.mercury.on('event:telephony_calls.received', async (event) => {
+                    customLog("mercury telephony_calls.received EVENT:");
+                    customLog(event);
+                    var callingToken = Desktop.agentContact.SERVICE.webexCalling.getAccessTokenFunc();
+                    previousCall = structuredClone(currentCall);
+                    customLog("previousCall:", previousCall);
+                    currentCall = structuredClone(event);
+                    customLog("currentCall:", currentCall);
+                    try {   
+                        // Start conference with active calls - only if merge operation is pending
+                        if(showMergePanel === true && 
+                           previousCallNumber && 
+                           previousCallNumber === currentCall.data.remoteParty.number){
+                          customLog("Auto-merge conditions met - previousCallNumber matches and merge panel is active");
+                          const conferenceResponse = await fetch('https://webexapis.com/v1/telephony/conference', {
+                              method: 'POST',
+                              headers: {
+                                  'Authorization': `Bearer ${callingToken}`,
+                                  'Content-Type': 'application/json'
+                              },
+                              body: JSON.stringify({
+                                  callIds: [previousCall.data.callId, currentCall.data.callId]
+                              })
+                          });
+                          
+                          if (conferenceResponse.ok) {
+                              customLog("Conference started successfully:");
+                              
+                              // Hide merge panel after successful conference
+                              showMergePanel = false;
+                              
+                              // Use the current widget instance (updated on each reload)
+                              if (currentWidgetInstance && currentWidgetInstance.shadowRoot) {
+                                const mergePanel = currentWidgetInstance.shadowRoot.getElementById('merge-panel');
+                                customLog("Found merge panel:", mergePanel);
+                                if (mergePanel) {
+                                  mergePanel.classList.add('invisible');
+                                  customLog("Merge panel hidden");
+                                } else {
+                                  customLog("Merge panel not found in current shadowRoot");
+                                }
+                              } else {
+                                customLog("currentWidgetInstance or shadowRoot not available");
+                              }
+                              
+                              // Clear tracked transfer payload
+                              trackedTransferPayload = null;
+                              previousCallNumber = null;
+                          } else {
+                              customLog(`Error starting conference: ${conferenceResponse.status} ${conferenceResponse.statusText}`);
+                              const errorData = await conferenceResponse.json();
+                              customLog(errorData);
+                              
+                              // Clear variables on error to prevent future accidental merges
+                              customLog("Clearing merge state due to conference error");
+                              showMergePanel = false;
+                              trackedTransferPayload = null;
+                              previousCallNumber = null;
+                          }
+                        }
+                    } catch (error) {
+                        customLog("Error handling telephony_calls.received event:");
+                        customLog(error);
+                    }
+                });
+                customLog("initialized webexService.internal.mercury.on:event:telephony_calls.received listener.");
+            });
+          }catch(e){
+            customLog("webexService.meetings.register() error:");
+            customLog(e);
+          }
+        });
 
         customLog("loaded = true");
         loaded = true;
