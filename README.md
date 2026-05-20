@@ -2,6 +2,8 @@
 
 Hosts a widget which will function inside of Contact Center Agent Desktop that allows a Webex CC agent to cherry pick queued voice calls utilizing the Get Tasks and Assign Task APIs.   
 
+Note: This application was designed only with desk phone or Webex softphone in mind.  WebRTC may be possible, but would require changes to the code.
+
 ## Demo
 [![Vidcast Overview](https://github.com/user-attachments/assets/a4d42315-5ea6-4a1e-b080-496abe5e55f0)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
 
