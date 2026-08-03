@@ -322,7 +322,138 @@ var previousCall;
 var previousCallNumber;
 var trackedTransferPayload;
 var showMergePanel = false;
+var mergeAwaitingReturnCall = false;
+var mergeSecondCallId = null;
+var mergeTimeoutId = null;
 var currentWidgetInstance = null;
+var conferenceTransferredTaskIds = new Set();
+var desktopListenersRegistered = false;
+var taskPollIntervalId = null;
+var buttonSyncIntervalId = null;
+
+function getCookie(name) {
+  if (typeof Cookies === 'undefined') return undefined;
+  return Cookies.get(name);
+}
+
+function setCookie(name, value) {
+  if (typeof Cookies === 'undefined') return;
+  Cookies.set(name, value);
+}
+
+function registerDesktopEventListeners() {
+  if (desktopListenersRegistered) return;
+  desktopListenersRegistered = true;
+
+  Desktop.agentStateInfo.addEventListener('updated', (contact) => {
+    customLog('New state updated received:', contact);
+  });
+
+  Desktop.agentContact.addEventListener('eAgentOfferContact', (contact) => {
+    const widget = currentWidgetInstance;
+    if (!widget) return;
+    customLog('New eAgentOfferContact received:', contact);
+    const taskId = contact.data.interactionId;
+    const loadingIcon = widget.shadowRoot.getElementById(taskId + '-loading');
+    if (loadingIcon) loadingIcon.classList.add('invisible');
+  });
+
+  Desktop.agentContact.addEventListener('eAgentContactAssigned', (contact) => {
+    customLog('Agent answered call - enabling Conference buttons');
+    currentWidgetInstance?.updateButtonStates(true);
+  });
+
+  Desktop.agentContact.addEventListener('eAgentContactEnded', (contact) => {
+    customLog('Agent call ended - disabling Conference buttons');
+    currentWidgetInstance?.updateButtonStates(false);
+  });
+
+  Desktop.agentContact.addEventListener('eAgentWrapup', (contact) => {
+    customLog('Agent entered wrapup - disabling Conference buttons');
+    currentWidgetInstance?.updateButtonStates(false);
+  });
+
+  Desktop.agentContact.addEventListener('eContactEnded', (contact) => {
+    customLog('Contact ended - disabling Conference buttons');
+    currentWidgetInstance?.updateButtonStates(false);
+  });
+}
+
+async function postTransferCache(payload) {
+  const endpoint = payload.command === 'transfer-merge' ? '/transfer-merge' : '/transfer-hold-init';
+  try {
+    const resp = await fetch(`${process.env.HOST_URI}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    customLog(`${endpoint} HTTP status:`, resp.status);
+    return resp.ok;
+  } catch (err) {
+    customLog(`${endpoint} HTTP failed:`, err);
+    return false;
+  }
+}
+
+async function runTelephonyConference(secondCallId, heldCallId) {
+  const callingToken = Desktop.agentContact.SERVICE.webexCalling.getAccessTokenFunc();
+  customLog('Starting telephony conference:', { secondCallId, heldCallId });
+  const conferenceResponse = await fetch('https://webexapis.com/v1/telephony/conference', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${callingToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      callIds: [secondCallId, heldCallId]
+    })
+  });
+
+  if (conferenceResponse.ok) {
+    customLog('Conference started successfully');
+    if (currentWidgetInstance) {
+      currentWidgetInstance.finishConferenceMerge();
+    } else {
+      mergeAwaitingReturnCall = false;
+      mergeSecondCallId = null;
+      showMergePanel = false;
+      trackedTransferPayload = null;
+      previousCallNumber = null;
+    }
+    return true;
+  }
+
+  customLog(`Error starting conference: ${conferenceResponse.status} ${conferenceResponse.statusText}`);
+  try {
+    customLog(await conferenceResponse.json());
+  } catch (_) { /* ignore */ }
+  return false;
+}
+
+function clearMergeWaitTimeout() {
+  if (mergeTimeoutId) {
+    clearTimeout(mergeTimeoutId);
+    mergeTimeoutId = null;
+  }
+}
+
+function scheduleMergeWaitTimeout() {
+  clearMergeWaitTimeout();
+  mergeTimeoutId = setTimeout(() => {
+    if (!mergeAwaitingReturnCall) return;
+    customLog('Merge timed out — held caller never returned to agent');
+    mergeAwaitingReturnCall = false;
+    mergeSecondCallId = null;
+    if (currentWidgetInstance) {
+      currentWidgetInstance.updateResultSpan(
+        'Merge timed out waiting for held caller. Check CallMerge flow /transfer-hold URL and server replica count.',
+        'red'
+      );
+      const mergeButton = currentWidgetInstance.shadowRoot?.getElementById('merge-button');
+      if (mergeButton) mergeButton.disabled = false;
+    }
+  }, 45000);
+}
 
 function addOrReplaceEventListener(element, eventName, newListener) {
   // Check if an event listener with the same name already exists
@@ -349,6 +480,139 @@ function makeStringTime(epochTime){
   return `${minutes}m`;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getInteractionIdFromContact(contact) {
+  return contact?.data?.interactionId ?? contact?.interactionId ?? null;
+}
+
+function taskMapHasInteraction(taskMap, interactionId) {
+  for (const [, task] of taskMap) {
+    if (task.interactionId === interactionId) return true;
+    if (task.interaction?.interactionId === interactionId) return true;
+  }
+  return false;
+}
+
+// Wait until WxCC puts the agent into wrap-up after transfer (call disconnected, channel still busy).
+function waitForAgentWrapupStart({ timeoutMs = 15000, interactionId } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Timed out after ${timeoutMs}ms waiting for wrap-up to start`));
+      }
+    }, timeoutMs);
+
+    const onWrapup = (contact) => {
+      const id = getInteractionIdFromContact(contact);
+      customLog('waitForAgentWrapupStart: eAgentWrapup', id);
+      if (id === interactionId && !settled) {
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve('eAgentWrapup');
+      }
+    };
+
+    Desktop.agentContact.addEventListener('eAgentWrapup', onWrapup, { once: true });
+  });
+}
+
+// Wait until the agent voice channel is free (202 != completed).
+function waitForAgentChannelFree({ timeoutMs = 30000, interactionId = null } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let pollId;
+    let timeoutId;
+
+    const finish = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(pollId);
+      clearTimeout(timeoutId);
+      customLog('waitForAgentChannelFree resolved:', reason);
+      resolve(reason);
+    };
+
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(pollId);
+      clearTimeout(timeoutId);
+      reject(new Error(message));
+    };
+
+    const channelIsFree = async () => {
+      const taskMap = await Desktop.actions.getTaskMap();
+      customLog(`waitForAgentChannelFree: taskMap.size=${taskMap.size}`);
+      if (taskMap.size === 0) return true;
+      if (interactionId && !taskMapHasInteraction(taskMap, interactionId)) return true;
+      return false;
+    };
+
+    const onReleased = (contact, eventName) => {
+      const id = getInteractionIdFromContact(contact);
+      customLog(`waitForAgentChannelFree: ${eventName}`, id);
+      if (!interactionId || id === interactionId) {
+        channelIsFree().then(free => { if (free) finish(eventName); });
+      }
+    };
+
+    Desktop.agentContact.addEventListener('eAgentContactEnded', (c) => onReleased(c, 'eAgentContactEnded'), { once: true });
+    Desktop.agentContact.addEventListener('eAgentWrapup', (c) => onReleased(c, 'eAgentWrapup'), { once: true });
+    Desktop.agentContact.addEventListener('eContactEnded', (c) => onReleased(c, 'eContactEnded'), { once: true });
+
+    channelIsFree().then(free => { if (free) finish('alreadyFree'); });
+
+    pollId = setInterval(async () => {
+      if (await channelIsFree()) finish('taskMapPoll');
+    }, 200);
+
+    timeoutId = setTimeout(
+      () => fail(`Timed out after ${timeoutMs}ms waiting for agent channel to free`),
+      timeoutMs
+    );
+  });
+}
+
+async function assignTaskWithRetry(widget, taskId, { maxAttempts = 6, delayMs = 1000, confirmDelayMs = 500 } = {}) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    customLog(`assignTaskWithRetry attempt ${attempt}/${maxAttempts} for ${taskId}`);
+    const result = await widget.assignTask(taskId);
+    if (!result.ok) {
+      customLog(`assignTask HTTP error: ${result.status}`);
+      if (attempt < maxAttempts) await sleep(delayMs);
+      continue;
+    }
+    await sleep(confirmDelayMs);
+    const taskMap = await Desktop.actions.getTaskMap();
+    if (taskMapHasInteraction(taskMap, taskId)) {
+      customLog(`assignTaskWithRetry succeeded on attempt ${attempt}`);
+      return { ok: true, attempt };
+    }
+    customLog(`assignTaskWithRetry: task ${taskId} not on agent yet, retrying...`);
+    if (attempt < maxAttempts) await sleep(delayMs);
+  }
+  return { ok: false };
+}
+
+
+function normalizePhoneNumber(num) {
+  if (!num) return '';
+  return String(num).replace(/\D/g, '');
+}
+
+function phoneNumbersMatch(a, b) {
+  const na = normalizePhoneNumber(a);
+  const nb = normalizePhoneNumber(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.length >= 10 && nb.length >= 10 && na.slice(-10) === nb.slice(-10)) return true;
+  return false;
+}
 
 async function getCallerIds(taskIds){
   customLog("getCallerIds:");
@@ -424,7 +688,6 @@ class myDesktopSDK extends HTMLElement {
     }
     document.head.appendChild(socketIOSDK);
 
-
     this.attachShadow({ mode: "open" });
     this.shadowRoot.appendChild(template.content.cloneNode(true));
     customLog("attached shadow");
@@ -448,8 +711,9 @@ class myDesktopSDK extends HTMLElement {
         loadingIcon.classList.add("invisible");
         try{
           customLog(`status of ${taskId} after claim:`)
-          customLog(queueTasks[taskId].status);
-          if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
+          const taskStatus = queueTasks[taskId]?.status;
+          customLog(taskStatus);
+          if(taskStatus && ["queued", "created"].indexOf(taskStatus) >= 0){
             claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
           }
         }catch(ex){
@@ -481,8 +745,9 @@ class myDesktopSDK extends HTMLElement {
         loadingIcon.classList.add("invisible");
         try{
           customLog(`status of ${taskId} after conference click:`)
-          customLog(queueTasks[taskId].status);
-          if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
+          const taskStatus = queueTasks[taskId]?.status;
+          customLog(taskStatus);
+          if(taskStatus && ["queued", "created"].indexOf(taskStatus) >= 0){
             conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
           }
         }catch(ex){
@@ -508,6 +773,7 @@ class myDesktopSDK extends HTMLElement {
         agentNumber: window.agentDetails?.extension,
         direction: interaction.contactDirection
       };
+      await postTransferCache(trackedTransferPayload);
       socket.emit("message", trackedTransferPayload);
       previousCallNumber = trackNumber;
       
@@ -519,9 +785,41 @@ class myDesktopSDK extends HTMLElement {
         mergeCallerNumber.textContent = trackNumber;
         mergePanel.classList.remove('invisible');
       }
-      await self.transferTask("10070", transferTaskId);
+      const transferResult = await self.transferTask(process.env.TRANSFER_NUMBER, transferTaskId);
+      if (!transferResult.ok) {
+        customLog('conferenceButtonClick: transfer failed, aborting');
+        self.updateResultSpan('Conference failed: transfer rejected', 'red');
+        return;
+      }
+
+      // First call is in transfer queue — hide its action buttons for the rest of the conference flow.
+      self.deactivateConferenceTaskCard(transferTaskId, 'transferred');
+
+      // Transfer triggers ACW; force wrap-up via API to skip the Desktop auto-wrap-up timer (~4s).
+      try {
+        await waitForAgentWrapupStart({ timeoutMs: 10000, interactionId: transferTaskId });
+      } catch (wrapStartErr) {
+        customLog('conferenceButtonClick: wrap-up start wait timed out, forcing wrap-up anyway');
+        customLog(wrapStartErr);
+      }
+
+      customLog('conferenceButtonClick: forcing wrap-up to clear ACW');
       await self.wrapUpTask(transferTaskId);
-      await self.assignTask(taskId);
+
+      customLog('conferenceButtonClick: waiting for agent channel to free...');
+      try {
+        await waitForAgentChannelFree({ timeoutMs: 15000, interactionId: transferTaskId });
+      } catch (waitErr) {
+        customLog('conferenceButtonClick: channel wait timed out, will retry assign anyway');
+        customLog(waitErr);
+      }
+
+      const assignResult = await assignTaskWithRetry(self, taskId);
+      if (!assignResult.ok) {
+        customLog('conferenceButtonClick: assign failed after retries');
+        self.updateResultSpan('Conference failed: could not assign second call', 'red');
+        return;
+      }
     }catch(e){
       customLog("conferenceButtonClick Error:");
       customLog(e);
@@ -532,6 +830,50 @@ class myDesktopSDK extends HTMLElement {
     const createdAgo = makeStringTime(task.createdTime);
     const updatedAgo = makeStringTime(task.lastUpdatedTime);
     return `<td class="column-one">Age: ${createdAgo}</td><td>Last updated: ${updatedAgo}</td>`;
+  }
+
+  hideTaskActionButtons(taskId) {
+    const claimButton = this.shadowRoot.getElementById(taskId + "-button");
+    const conferenceButton = this.shadowRoot.getElementById(taskId + "-conference-button");
+    const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
+    if (claimButton) claimButton.style.display = "none";
+    if (conferenceButton) conferenceButton.style.display = "none";
+    if (loadingIcon) loadingIcon.classList.add("invisible");
+  }
+
+  deactivateConferenceTaskCard(taskId, reason = 'transferred') {
+    conferenceTransferredTaskIds.add(taskId);
+    const card = this.shadowRoot.getElementById(taskId);
+    if (card) {
+      card.dataset.conferenceState = reason;
+    }
+    this.hideTaskActionButtons(taskId);
+    const container = this.shadowRoot.getElementById(taskId + "-container");
+    if (container) container.classList.add('faded');
+    const statusEl = this.shadowRoot.getElementById(taskId + "-status");
+    if (statusEl && reason === 'transferred') {
+      statusEl.innerText = 'In conference hold';
+    } else if (statusEl && reason === 'merged') {
+      statusEl.innerText = 'Merged';
+    }
+  }
+
+  finishConferenceMerge() {
+    clearMergeWaitTimeout();
+    mergeAwaitingReturnCall = false;
+    mergeSecondCallId = null;
+    if (trackedTransferPayload?.transferTaskId) {
+      this.deactivateConferenceTaskCard(trackedTransferPayload.transferTaskId, 'merged');
+    }
+    showMergePanel = false;
+    if (currentWidgetInstance?.shadowRoot) {
+      const mergePanel = currentWidgetInstance.shadowRoot.getElementById('merge-panel');
+      const mergeButton = currentWidgetInstance.shadowRoot.getElementById('merge-button');
+      if (mergePanel) mergePanel.classList.add('invisible');
+      if (mergeButton) mergeButton.disabled = false;
+    }
+    trackedTransferPayload = null;
+    previousCallNumber = null;
   }
 
 
@@ -635,6 +977,10 @@ class myDesktopSDK extends HTMLElement {
           card.classList.add('animate');
         },100);
       }
+
+      if (conferenceTransferredTaskIds.has(taskId)) {
+        this.deactivateConferenceTaskCard(taskId, card.dataset.conferenceState || 'transferred');
+      }
     }catch(e){
       customLog(`addTask Error:`, null, "task-loop");
       customLog(e, null, "task-loop");
@@ -647,6 +993,13 @@ class myDesktopSDK extends HTMLElement {
       customLog(task, null, "task-loop");
       const card = this.shadowRoot.getElementById(taskId);
       card.dataset.updated = `${task.lastUpdatedTime}`;
+
+      if (conferenceTransferredTaskIds.has(taskId)) {
+        this.deactivateConferenceTaskCard(taskId, card.dataset.conferenceState || 'transferred');
+        this.shadowRoot.getElementById(taskId+"-timestamps").innerHTML = this.getTimestampRow(task);
+        return;
+      }
+
       this.shadowRoot.getElementById(taskId+"-status").innerText = capitalizeFirstLetter(task.status);
       this.shadowRoot.getElementById(taskId+"-timestamps").innerHTML = this.getTimestampRow(task);
       if(["queued", "created"].indexOf(task.status) < 0){
@@ -696,7 +1049,8 @@ class myDesktopSDK extends HTMLElement {
     confButtons.forEach(button => {
       const taskId = button.id.split("-conference-button")[0];
       const card = this.shadowRoot.getElementById(taskId);
-      if (!card || card.dataset.status !== "queued") return; // Deactivated card: don't touch
+      if (!card || card.dataset.status !== "queued") return;
+      if (conferenceTransferredTaskIds.has(taskId) || card.dataset.conferenceState) return;
       const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
       if(!loadingIcon || loadingIcon.classList.contains("invisible")){
         button.style.display = isOnCall ? "inline-block" : "none";
@@ -707,7 +1061,8 @@ class myDesktopSDK extends HTMLElement {
     claimButtons.forEach(button => {
       const taskId = button.id.split("-button")[0];
       const card = this.shadowRoot.getElementById(taskId);
-      if (!card || card.dataset.status !== "queued") return; // Deactivated card: don't touch
+      if (!card || card.dataset.status !== "queued") return;
+      if (conferenceTransferredTaskIds.has(taskId) || card.dataset.conferenceState) return;
       const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
       if(!loadingIcon || loadingIcon.classList.contains("invisible")){
         button.style.display = isOnCall ? "none" : "inline-block";
@@ -732,9 +1087,11 @@ class myDesktopSDK extends HTMLElement {
         })
       });
       customLog(`wrapUpResp.status:${wrapUpResp.status}`);
+      return { ok: wrapUpResp.ok, status: wrapUpResp.status };
     }catch(e){
       customLog("wrapUpTask Error:");
       customLog(e);
+      return { ok: false, error: e };
     }
   }
 
@@ -754,11 +1111,11 @@ class myDesktopSDK extends HTMLElement {
         })
       });
       customLog(`transferResp.status:${transferResp.status}`);
-      return taskId;
+      return { ok: transferResp.ok, status: transferResp.status, taskId };
     }catch(e){
       customLog("transferTask Error:");
       customLog(e);
-      return null;
+      return { ok: false, error: e };
     }
   }
 
@@ -772,9 +1129,11 @@ class myDesktopSDK extends HTMLElement {
           }
         });
         customLog(`assignResp.status:${assignResp.status}`);
+        return { ok: assignResp.ok, status: assignResp.status };
     }catch(e){
       customLog("assignTask Error:");
       customLog(e);
+      return { ok: false, error: e };
     }
   }
 
@@ -893,7 +1252,7 @@ class myDesktopSDK extends HTMLElement {
           try{
             addOrReplaceEventListener( this.shadowRoot.getElementById(checkbox), 'change', e => {
               customLog(`${checkbox} change`);
-              Cookies.set(checkbox, e.currentTarget.checked);
+              setCookie(checkbox, e.currentTarget.checked);
               this.filterTasks();
             });
           } catch(e){
@@ -961,8 +1320,8 @@ class myDesktopSDK extends HTMLElement {
         let self = this;
 
         for(let filter of queueStatuses){
-          customLog(filter, Cookies.get(filter));
-          if(Cookies.get(filter) === "false"){
+          customLog(filter, getCookie(filter));
+          if(getCookie(filter) === "false"){
             this.shadowRoot.getElementById(filter).checked = false;
           }
         }
@@ -976,12 +1335,14 @@ class myDesktopSDK extends HTMLElement {
         setTimeout(async function(){
           await self.getTasks(self);
         }, 100);
-        setInterval(async function(){
+        if (taskPollIntervalId) clearInterval(taskPollIntervalId);
+        taskPollIntervalId = setInterval(async function(){
           await self.getTasks(self);
         }, checkSeconds * 1000);
 
         // Periodically check and update button states to stay in sync
-        setInterval(async function(){
+        if (buttonSyncIntervalId) clearInterval(buttonSyncIntervalId);
+        buttonSyncIntervalId = setInterval(async function(){
           const currentTaskMap = await Desktop.actions.getTaskMap();
           const isOnCall = currentTaskMap.size > 0;
           if(isOnCall !== agentIsOnCall){
@@ -1003,33 +1364,48 @@ class myDesktopSDK extends HTMLElement {
               return;
             }
             
-            // Disable button for 10 seconds
+            mergeAwaitingReturnCall = true;
+            mergeSecondCallId = currentCall?.data?.callId || null;
+            customLog('Merge: saved active second-call ID:', mergeSecondCallId);
             mergeButton.disabled = true;
-            setTimeout(() => {
-              mergeButton.disabled = false;
-            }, 10000);
-            
-            // Send socket message with transfer-merge command
+
             const mergePayload = {
               ...trackedTransferPayload,
               command: "transfer-merge"
             };
             
             customLog("Sending transfer-merge message:", mergePayload);
+            await postTransferCache(mergePayload);
             socket.emit("message", mergePayload);
+
+            // Re-post every 4s so CallMerge poll is more likely to hit a pod with fresh cache (multi-replica prod)
+            for (let i = 0; i < 5; i++) {
+              setTimeout(() => {
+                if (!mergeAwaitingReturnCall) return;
+                postTransferCache(mergePayload);
+                socket.emit("message", mergePayload);
+              }, (i + 1) * 4000);
+            }
+
+            scheduleMergeWaitTimeout();
+            customLog('Merge requested — waiting for held call to return for auto-conference');
           });
           customLog("Merge button handler initialized");
         }
         
         // Restore merge panel state if needed (after widget reload)
-        if (showMergePanel && trackedTransferPayload) {
+        if ((showMergePanel || mergeAwaitingReturnCall) && trackedTransferPayload) {
           customLog("Restoring merge panel state after widget reload");
           const mergePanel = this.shadowRoot.getElementById('merge-panel');
           const mergeCallerNumber = this.shadowRoot.getElementById('merge-caller-number');
+          const mergeButton = this.shadowRoot.getElementById('merge-button');
           if (mergePanel && mergeCallerNumber) {
             mergeCallerNumber.textContent = trackedTransferPayload.number || previousCallNumber;
             mergePanel.classList.remove('invisible');
             customLog("Merge panel restored with number:", trackedTransferPayload.number);
+          }
+          if (mergeButton && mergeAwaitingReturnCall) {
+            mergeButton.disabled = true;
           }
         }
       }catch(e){
@@ -1052,8 +1428,7 @@ class myDesktopSDK extends HTMLElement {
       }
       customLog("Desktop.agentStateInfo.latestData", Desktop.agentStateInfo.latestData);
       if(!loaded){
-
-        Cookies.get("queued");
+        getCookie("queued");
 
         customLog("myINIT webexService", webexService);
         customLog("myINIT:", Desktop.agentContact)
@@ -1074,42 +1449,7 @@ class myDesktopSDK extends HTMLElement {
           window.agentDetails = resp;
         });
 
-        Desktop.agentStateInfo.addEventListener('updated', (contact) => {
-            customLog('New state updated received:', contact);
-        });
-
-        let self = this;
-        Desktop.agentContact.addEventListener('eAgentOfferContact', (contact) => {
-            customLog('New eAgentOfferContact received:', contact);
-            const taskId = contact.data.interactionId;
-            let loadingIcon = self.shadowRoot.getElementById(taskId+"loading-");
-            customLog(loadingIcon);
-            loadingIcon.classList.add("invisible");
-        });
-
-        // Enable Conference buttons when agent answers a call
-        Desktop.agentContact.addEventListener('eAgentContactAssigned', (contact) => {
-            customLog('Agent answered call - enabling Conference buttons');
-            self.updateButtonStates(true); // Agent is on call
-        });
-
-        // Disable Conference buttons when agent's call ends
-        Desktop.agentContact.addEventListener('eAgentContactEnded', (contact) => {
-            customLog('Agent call ended - disabling Conference buttons');
-            self.updateButtonStates(false); // Agent is not on call
-        });
-
-        // Also handle when agent wraps up (task ends)
-        Desktop.agentContact.addEventListener('eAgentWrapup', (contact) => {
-            customLog('Agent entered wrapup - disabling Conference buttons');
-            self.updateButtonStates(false); // Agent is not on call
-        });
-
-        // Handle when contact ends
-        Desktop.agentContact.addEventListener('eContactEnded', (contact) => {
-            customLog('Contact ended - disabling Conference buttons');
-            self.updateButtonStates(false); // Agent is not on call
-        });
+        registerDesktopEventListeners();
         
         this.loadContent();
 
@@ -1122,61 +1462,63 @@ class myDesktopSDK extends HTMLElement {
                 webexService.internal.mercury.on('event:telephony_calls.received', async (event) => {
                     customLog("mercury telephony_calls.received EVENT:");
                     customLog(event);
-                    var callingToken = Desktop.agentContact.SERVICE.webexCalling.getAccessTokenFunc();
                     previousCall = structuredClone(currentCall);
                     customLog("previousCall:", previousCall);
                     currentCall = structuredClone(event);
                     customLog("currentCall:", currentCall);
-                    try {   
-                        // Start conference with active calls - only if merge operation is pending
-                        if(showMergePanel === true && 
-                           previousCallNumber && 
-                           previousCallNumber === currentCall.data.remoteParty.number){
-                          customLog("Auto-merge conditions met - previousCallNumber matches and merge panel is active");
-                          const conferenceResponse = await fetch('https://webexapis.com/v1/telephony/conference', {
-                              method: 'POST',
-                              headers: {
-                                  'Authorization': `Bearer ${callingToken}`,
-                                  'Content-Type': 'application/json'
-                              },
-                              body: JSON.stringify({
-                                  callIds: [previousCall.data.callId, currentCall.data.callId]
-                              })
-                          });
-                          
-                          if (conferenceResponse.ok) {
-                              customLog("Conference started successfully:");
-                              
-                              // Hide merge panel after successful conference
-                              showMergePanel = false;
-                              
-                              // Use the current widget instance (updated on each reload)
-                              if (currentWidgetInstance && currentWidgetInstance.shadowRoot) {
-                                const mergePanel = currentWidgetInstance.shadowRoot.getElementById('merge-panel');
-                                customLog("Found merge panel:", mergePanel);
-                                if (mergePanel) {
-                                  mergePanel.classList.add('invisible');
-                                  customLog("Merge panel hidden");
-                                } else {
-                                  customLog("Merge panel not found in current shadowRoot");
-                                }
-                              } else {
-                                customLog("currentWidgetInstance or shadowRoot not available");
-                              }
-                              
-                              // Clear tracked transfer payload
-                              trackedTransferPayload = null;
-                              previousCallNumber = null;
-                          } else {
-                              customLog(`Error starting conference: ${conferenceResponse.status} ${conferenceResponse.statusText}`);
-                              const errorData = await conferenceResponse.json();
-                              customLog(errorData);
-                              
-                              // Clear variables on error to prevent future accidental merges
-                              customLog("Clearing merge state due to conference error");
-                              showMergePanel = false;
-                              trackedTransferPayload = null;
-                              previousCallNumber = null;
+                    try {
+                        const remoteNumber = currentCall?.data?.remoteParty?.number;
+                        const heldCallId = currentCall?.data?.callId;
+                        const mergePending = showMergePanel || mergeAwaitingReturnCall;
+                        const secondCallId = mergeAwaitingReturnCall && mergeSecondCallId
+                          ? mergeSecondCallId
+                          : previousCall?.data?.callId;
+                        const numberMatches = previousCallNumber && phoneNumbersMatch(previousCallNumber, remoteNumber);
+                        const isNewInboundLeg = mergeAwaitingReturnCall &&
+                          mergeSecondCallId &&
+                          heldCallId &&
+                          heldCallId !== mergeSecondCallId;
+                        customLog('Auto-merge check:', {
+                          mergePending,
+                          mergeAwaitingReturnCall,
+                          previousCallNumber,
+                          remoteNumber,
+                          numberMatches,
+                          isNewInboundLeg,
+                          secondCallId,
+                          heldCallId
+                        });
+
+                        // After Merge click, conference when the held call returns as any new call leg.
+                        // Do not require ANI match — CallMerge may present a different remoteParty.
+                        if (mergeAwaitingReturnCall && isNewInboundLeg && secondCallId) {
+                          customLog('Auto-merge conditions met - starting telephony conference');
+                          const ok = await runTelephonyConference(secondCallId, heldCallId);
+                          if (!ok) {
+                            customLog("Clearing merge state due to conference error");
+                            mergeAwaitingReturnCall = false;
+                            mergeSecondCallId = null;
+                            showMergePanel = false;
+                            trackedTransferPayload = null;
+                            previousCallNumber = null;
+                            clearMergeWaitTimeout();
+                          }
+                        } else if (mergePending &&
+                           !mergeAwaitingReturnCall &&
+                           previousCallNumber &&
+                           numberMatches &&
+                           previousCall?.data?.callId &&
+                           heldCallId) {
+                          // Pre-merge path (legacy): match by caller ID before Merge was clicked
+                          customLog("Auto-merge conditions met (pre-merge) - starting telephony conference");
+                          const ok = await runTelephonyConference(previousCall.data.callId, heldCallId);
+                          if (!ok) {
+                            mergeAwaitingReturnCall = false;
+                            mergeSecondCallId = null;
+                            showMergePanel = false;
+                            trackedTransferPayload = null;
+                            previousCallNumber = null;
+                            clearMergeWaitTimeout();
                           }
                         }
                     } catch (error) {
@@ -1196,6 +1538,7 @@ class myDesktopSDK extends HTMLElement {
         loaded = true;
       } else {
         customLog("webex already loaded.");
+        registerDesktopEventListeners();
         this.loadContent();
       }
     }catch(e){
@@ -1214,7 +1557,7 @@ class myDesktopSDK extends HTMLElement {
   }
 
   disconnectedCallback() {
-    Desktop.agentContact.removeAllEventListeners();
+    customLog("disconnectedCallback — keeping Desktop listeners registered");
   }
 
 }
