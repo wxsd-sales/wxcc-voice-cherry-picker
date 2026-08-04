@@ -7,3 +7,4 @@ cherryPickerWidgetDEV.json
 notes
 *.yaml
 node_modules/
+debug_console_logs/

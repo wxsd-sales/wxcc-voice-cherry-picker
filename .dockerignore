@@ -1,0 +1,21 @@
+# Never copy host dependencies into the Linux container
+node_modules
+
+# Build artifacts — always produce fresh via `npm run build` inside the image
+src/build
+
+# Local/dev secrets — prod.env is copied explicitly in the Dockerfile
+.env
+.env.*
+!.env.example
+# prod.env is intentionally NOT ignored
+
+# Not needed at runtime
+.git
+.gitignore
+debug_console_logs
+notes
+flow
+*.md
+cc-voice-cherry-picker.yaml
+cherryPickerWidget*.json

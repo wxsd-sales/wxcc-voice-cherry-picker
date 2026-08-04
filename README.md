@@ -1,117 +1,237 @@
 # Contact Center Voice Call Cherry Picker Widget
 
-Hosts a widget which will function inside of Contact Center Agent Desktop that allows a Webex CC agent to cherry pick queued voice calls utilizing the Get Tasks and Assign Task APIs.   
+A Contact Center Agent Desktop widget that lets agents **cherry-pick** queued voice calls and **merge two inbound callers into a conference** — a pattern common in hospital transfer centers and similar environments where an agent may already be on a call when a second expected caller arrives.
 
-*Note: This application was designed only with desk phone or Webex softphone in mind.  WebRTC may be possible, but would require changes to the code.*
+**Requirements:** Webex Contact Center with **Webex Calling** (conference merge uses the Webex Calling telephony APIs). Designed for desk phone or Webex softphone; WebRTC may require additional changes.
 
 ## Demo
+
 [![Vidcast Overview](https://github.com/user-attachments/assets/a4d42315-5ea6-4a1e-b080-496abe5e55f0)](https://app.vidcast.io/share/1ec61338-9263-4e20-95c7-87cb24dfbdf3)
-
-
 
 ## Developer Documentation
 
-**https://developer.webex.com/webex-contact-center/docs/api/v1/tasks-call-control**  
+**https://developer.webex.com/webex-contact-center/docs/api/v1/tasks-call-control**
 
-## Getting Started
+---
 
-- Clone this repository:
-- ```git clone https://github.com/wxsd-sales/wxcc-voice-cherry-picker/.git```
+## How it works (end to end)
 
-The widget can be hosted locally for testing on the same machine as the agent desktop.  However, you will want to deploy this to a webserver with an SSL certificate when going live.
+The solution has three moving parts that must all be configured and pointed at the **same server hostname**:
 
-To understand how to interact with our Desktop Layout, please watch the video and supplemental detailed documentation @ **[Desktop Layout - Administration Guide](https://www.cisco.com/c/en/us/td/docs/voice_ip_comm/cust_contact/contact_center/webexcc/SetupandAdministrationGuide_2/b_mp-release-2/b_cc-release-2_chapter_011.html#topic_8230815F4023699032326F948C3F1495)**
+| Component | Role |
+|-----------|------|
+| **Widget** (`bundle.js` in Agent Desktop) | Polls tasks, Claim/Conference buttons, merge UI, Webex Calling auto-conference |
+| **Node server** (this repo) | Webhook receiver, transfer-hold cache, Socket.IO push to widget |
+| **GenericCherryPickerFlow** | Notifies the server when a new call enters the queue (real-time task cards) |
+| **GenericCallMerge** | Holds the first caller and returns them to the agent when merge is ready |
+
+```mermaid
+sequenceDiagram
+    participant C1 as Caller 1
+    participant C2 as Caller 2
+    participant Queue as Queue Flow
+    participant Widget as Cherry Picker Widget
+    participant Server as Node Server
+    participant Merge as CallMerge Flow
+    participant Agent as Agent (Webex Calling)
+
+    C1->>Queue: Inbound
+    Queue->>Server: POST / (webhook)
+    Server->>Widget: Socket.IO push
+    Widget->>Agent: Claim → Assign API
+    Agent->>C1: Connected (call 1)
+
+    C2->>Queue: Inbound
+    Queue->>Server: POST / (webhook)
+    Widget->>Agent: Conference click
+    Widget->>Server: POST /transfer-hold-init
+    Widget->>Agent: Transfer call 1 → TRANSFER_NUMBER
+    Note over Merge: Call 1 enters CallMerge flow (MOH)
+    Widget->>Agent: Assign call 2
+    Agent->>C2: Connected (call 2)
+
+    Widget->>Server: POST /transfer-merge (Merge click)
+    Merge->>Server: POST /transfer-hold (poll loop)
+    Server-->>Merge: ready:true, agentNumber
+    Merge->>Agent: Blind transfer caller 1 to agent extension
+    Agent->>Widget: Mercury telephony event
+    Widget->>Agent: POST webexapis.com/v1/telephony/conference
+    Note over Agent: Call 1 + Call 2 conferenced
+```
+
+### Cherry pick (single call)
+
+1. A call hits your **queue flow** ([flow/GenericCherryPickerFlow.json](flow/GenericCherryPickerFlow.json)).
+2. The flow sends an HTTP POST to your server (`POST /`) with caller metadata.
+3. The server caches the payload and pushes it to the widget over **Socket.IO** (by `OrgId`).
+4. The widget shows the task immediately. The agent clicks **Claim** → **Assign Task API**.
+5. Task status updates still come from polling **Get Tasks** every few seconds.
+
+### Conference merge (two calls)
+
+1. Agent is on **call 1**. **Call 2** appears with a **Conference** button (not Claim).
+2. **Conference** click (on call 2's card):
+   - Registers the held caller in server cache (`POST /transfer-hold-init`, `agentReady: false`).
+   - **Transfers call 1** to `TRANSFER_NUMBER` via the Transfer Task API (entry point into CallMerge).
+   - Wraps up call 1 on the agent, frees the voice channel, **assigns call 2**.
+3. **Call 1** runs in [flow/GenericCallMerge.json](flow/GenericCallMerge.json):
+   - Play hold music (4s slices, looped).
+   - `POST https://{{HOSTNAME}}/transfer-hold` with caller ANI + attempt counter.
+   - Server responds `{ ready, attempt, agentNumber }`.
+   - When `ready` is false → loop back to hold music.
+   - When `ready` is true → **blind transfer** to `{{AGENTNUMBER}}` (agent's Webex extension from cache).
+4. Agent clicks **Merge** in the widget:
+   - Sets cache `agentReady: true` (`POST /transfer-merge`).
+5. On the next CallMerge poll, server returns `ready: true` and `agentNumber`.
+6. Held caller returns to the agent as a new Webex Calling leg. The widget listens on **Mercury** and calls `POST https://webexapis.com/v1/telephony/conference` to join both legs.
+
+---
+
+## Server API
+
+| Method | Path | Who calls it | Purpose |
+|--------|------|--------------|---------|
+| `POST` | `/` | Queue flow (GenericCherryPickerFlow) | New-call webhook → cache + Socket.IO |
+| `POST` | `/transfer-hold-init` | Widget (Conference click) | Seed cache: `agentReady: false`, store `agentNumber` |
+| `POST` | `/transfer-merge` | Widget (Merge click) | Set cache: `agentReady: true` |
+| `POST` | `/transfer-hold` | CallMerge flow (poll loop) | Returns `{ ready, attempt?, agentNumber? }` |
+| `POST` | `/callerIds` | Widget (task poll) | Resolve caller ID from cached webhook data |
+
+**CallMerge poll request body** (from flow variable `HOSTNAME`):
+
+```json
+{"number": "{{NewPhoneContact.ANI}}", "attempt": "{{LOOPCOUNT}}"}
+```
+
+**CallMerge poll response** (when merge is ready):
+
+```json
+{"ready": true, "attempt": 2, "agentNumber": "10031"}
+```
+
+The `number` in cache lookups is normalized to the last 10 digits, so `+14074155779` and `4074155779` both match.
+
+---
+
+## Environment variables
+
+Copy [`.env.example`](.env.example) to `.env` (local) or edit [`prod.env`](prod.env) (Docker/prod). Webpack bakes `HOST_URI` and `TRANSFER_NUMBER` into `bundle.js` at build time.
+
+| Variable | Example | Purpose |
+|----------|---------|---------|
+| `PORT` | `10031` | Node server listen port |
+| `HOST_URI` | `https://cc-cherry-picker.example.com` | Public HTTPS base URL (widget assets, API, Socket.IO) |
+| `TRANSFER_NUMBER` | `10070` | WxCC entry point / dial number CallMerge is reached on when Conference transfers call 1 |
+
+**All three URLs must agree on the same host:**
+
+- Layout script: `{HOST_URI}/build/bundle.js`
+- Queue flow HTTP node: `https://{{HOSTNAME}}` → `POST /`
+- CallMerge flow HTTP node: `https://{{HOSTNAME}}/transfer-hold`
+- CallMerge flow variable `HOSTNAME`: hostname only (e.g. `cc-cherry-picker.wbx.ninja`, no `https://`)
+
+`TRANSFER_NUMBER` must match the **entry point** configured in WxCC that routes into your imported **GenericCallMerge** flow.
+
+---
 
 ## Installation
 
-### 1. Set up the .env file
-- a. Inside this project's root folder, rename the file ```.env.example``` to ```.env```
-- b. In a text editor, open the ```.env```
-- c. Choose a ```PORT``` or use ```PORT=5000``` if you are not sure what to use.
-- d. Paste your base url for your server between the double quotes of ```HOST_URI=""```.  If referring to examples from step 1, then either:
-  - i. ```HOST_URI="http://localhost:5000"```
-  - ii. ```HOST_URI="https://your.server.com"```
- 
-### 2. Configure the CC Queue Flow
-In Control Hub, you will need to modify the flow if you want the voice calls to appear in the widget immediately (you can skip this step, but new tasks (calls) will then only appear every 5 seconds on an interval.
-- a. If you don't already have a Queue Flow, you can import this flow as an example.
-    - [flow/GenericCherryPickerFlow.json](flow/GenericCherryPickerFlow.json)
-- b. If you already have a flow, the primary thing you will want to add will be an HTTP Request node (near the beginning of the flow, but after the New Phone Contact).  
-- c. With either a. or b., you will need to configure the HTTP Request node as a POST request to your ```HOST_URI``` (a public URL is required here, localhost will not work).
-    - The Request Body should be:
-    - ```
-      {"ANI":"{{NewPhoneContact.ANI}}", "DNIS":"{{NewPhoneContact.DNIS}}", "PSTNRegion":"{{NewPhoneContact.PSTNRegion}}", "EntryPointId":"{{NewPhoneContact.EntryPointId}}", "FlowId":"{{NewPhoneContact.FlowId}}", "InteractionId":"{{NewPhoneContact.InteractionId}}", "OrgId":"{{NewPhoneContact.OrgId}}", "FlowVersionLabel":"{{NewPhoneContact.FlowVersionLabel}}", "Headers":"{{NewPhoneContact.Headers}}", "CallbackType":"{{NewPhoneContact.CallbackType}}", "CallbackReason":"{{NewPhoneContact.CallbackReason}}", "ScheduleSourceInteractionId":"{{NewPhoneContact.ScheduleSourceInteractionId}}"} 
-      ```
-- d. Screenshots that may assist with the setup:  
-  <img width="318" height="495" alt="Image" src="https://github.com/user-attachments/assets/3f1025bf-14d0-48a2-84be-4628d8071fa9" />
-  <img width="380" height="476" alt="Image" src="https://github.com/user-attachments/assets/3f692e06-51f8-4ca4-8050-53723832a5d3" />
+### 1. Set up environment
 
+```bash
+cp .env.example .env
+# Edit PORT, HOST_URI, TRANSFER_NUMBER
+```
 
-### 3. Update the Queue and MMP manuallyAssignable properties.
-- In order for the Get/Assign Task APIs to function for the voice queue properly, you may need to edit the "manuallyAssignable" properties of the Queue, and the MultiMedia Profile associated with the Agent's Desktop.
-- The code does not include this, but you can do so manually with the API through something like Bruno or Postman.
-- a. Update the Service Queue to include ```"manuallyAssignable":true,```
-  - Retrieve [GET Service Queue Details](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/get-specific-contact-service-queue-by-id)
-  - Update [PUT Service Queue Details](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/update-specific-contact-service-queue-by-id)
-- b. Update the MMP For the Agent's Desktop to include "manuallyAssignable.telephony" : 1, for example:
-  - ```
-     "manuallyAssignable": {
-        "telephony": 1,
-        "chat": 0,
-        "email": 0,
-        "social": 0
-      },
-    ```
-  - Retrieve [GET MMP](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/get-specific-multimedia-profile-by-id)
-  - Update [PUT MMP](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/update-specific-multimedia-profile-by-id)
-  
-### 4.a. Running the widget webserver as a container (Docker) (recommended)
+### 2. Import CC flows in Control Hub
 
-- If you prefer to run this through ```npm```, skip this step and proceed to 4.b.
-- Otherwise, run the following commands from the terminal inside your project's root directory:
-- `docker build -t wxcc-voice-cherry-picker .`
-- `docker run -p 5000:5000 -i -t wxcc-voice-cherry-picker`
-  - replace `5000` in both places with the ```PORT``` used in your `.env` file.  
+Import both flows and attach them correctly:
 
-### 4.b. Running the widget webserver (npm)
-_Node.js version >= 21.5 must be installed on the system in order to run this through npm._
+#### a. Queue flow — [flow/GenericCherryPickerFlow.json](flow/GenericCherryPickerFlow.json)
 
-- It is recommended that you run this as a container (step 4.a.).
-- If you do not wish to run the webserver as a container (Docker), proceed with this step:
-- Inside this project on your terminal type: `npm install`
-- Then inside this project on your terminal type: `npm run build`
-- Then inside this project on your terminal type: `npm start`
-- This should run the app on your ```PORT``` (from .env file)
+- Attach to your voice queue entry point (or merge into an existing flow).
+- Set flow variable **`HOSTNAME`** to your server hostname (no scheme).
+- HTTP Request node after **New Phone Contact** → `POST https://{{HOSTNAME}}` with body:
 
+```json
+{"ANI":"{{NewPhoneContact.ANI}}", "DNIS":"{{NewPhoneContact.DNIS}}", "PSTNRegion":"{{NewPhoneContact.PSTNRegion}}", "EntryPointId":"{{NewPhoneContact.EntryPointId}}", "FlowId":"{{NewPhoneContact.FlowId}}", "InteractionId":"{{NewPhoneContact.InteractionId}}", "OrgId":"{{NewPhoneContact.OrgId}}", "FlowVersionLabel":"{{NewPhoneContact.FlowVersionLabel}}", "Headers":"{{NewPhoneContact.Headers}}", "CallbackType":"{{NewPhoneContact.CallbackType}}", "CallbackReason":"{{NewPhoneContact.CallbackReason}}", "ScheduleSourceInteractionId":"{{NewPhoneContact.ScheduleSourceInteractionId}}"}
+```
 
-### 5. Wire Up the Widget to the Layout:
+Without this webhook, tasks still appear via Get Tasks polling (~5s delay).
 
-- You must replace the url on line 108 of the **_cherryPickerWidget.json_** file with your correct server endpoint. For examples:
-  - "script": "http://localhost:5000/build/bundle.js",
-  - "script": "https://your.webserver.com/build/bundle.js",
-- This should be based on the ```HOST_URI``` in your .env file + ```/build/bundle.js```.
-  
-- Upload the **_cherryPickerWidget.json_** file onto your Administration Portal **[WebexCC Portal - US](https://portal.wxcc-us1.cisco.com/portal/home.html#)**
-  - _link above is referencing the US portal link please change if you are in different geo (us1, eu1, eu2, anz1)_
-  - Note that Layouts are configured per Agent Team.
-- Log in to your agent and select the right Team to view the new layout.
+#### b. CallMerge flow — [flow/GenericCallMerge.json](flow/GenericCallMerge.json)
 
-**Additional Improvements:**
+- Import as a **separate flow** and connect it to entry point **`TRANSFER_NUMBER`** (same value as in `.env` / `prod.env`).
+- Set flow variable **`HOSTNAME`** to the same hostname as the queue flow.
+- The flow loop is: **Play Music (4s)** → **HTTP POST `/transfer-hold`** → **if `AGENTREADY`** → **Blind Transfer to `{{AGENTNUMBER}}`** → else loop.
+- After import, update `orgId` and any org-specific IDs if exporting from another tenant.
 
-- You can modify the widget as required.
-- To create a new compiled JS file, using `npm run build` which will create the new compiled JS under `build/bundle.js`.
-- You may rename this file, host it on your server of choice, and use this as the widget `src` parameter in the layout.
+Screenshots for queue-flow HTTP setup:
+
+<img width="318" height="495" alt="Image" src="https://github.com/user-attachments/assets/3f1025bf-14d0-48a2-84be-4628d8071fa9" />
+<img width="380" height="476" alt="Image" src="https://github.com/user-attachments/assets/3f692e06-51f8-4ca4-8050-53723832a5d3" />
+
+### 3. Queue and MMP `manuallyAssignable`
+
+For Get/Assign Task APIs on voice:
+
+- **Service queue:** `"manuallyAssignable": true`
+  - [GET](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/get-specific-contact-service-queue-by-id) / [PUT](https://developer.webex.com/webex-contact-center/docs/api/v1/contact-service-queues/update-specific-contact-service-queue-by-id)
+- **Multimedia profile:** `"manuallyAssignable": { "telephony": 1, ... }`
+  - [GET](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/get-specific-multimedia-profile-by-id) / [PUT](https://developer.webex.com/webex-contact-center/docs/api/v1/multimedia-profile/update-specific-multimedia-profile-by-id)
+
+### 4. Run the server
+
+**Docker (recommended)**
+
+```bash
+docker build --no-cache -t wxcc-voice-cherry-picker .
+docker run -p 10031:10031 -i -t wxcc-voice-cherry-picker
+```
+
+Docker uses `prod.env` copied to `.env` before `npm run build`. Use `--no-cache` after widget/server changes so `bundle.js` is rebuilt.
+
+**npm** (Node ≥ 21.5)
+
+```bash
+npm install
+npm run build
+npm start
+```
+
+### 5. Wire up Agent Desktop layout
+
+- Edit layout JSON (`cherryPickerWidget.json` or your team-specific file): set script to `{HOST_URI}/build/bundle.js`.
+- Upload to [WebexCC Portal](https://portal.wxcc-us1.cisco.com/portal/home.html#) (geo may vary).
+- Layouts are per Agent Team.
+
+---
+
+## Troubleshooting merge
+
+| Symptom | Likely cause |
+|---------|----------------|
+| Tasks appear slowly but merge fails | Queue webhook OK; check **CallMerge** flow `HOSTNAME` and `/transfer-hold` URL |
+| Merge click does nothing | Check server logs for `/transfer-merge` then `/transfer-hold` with `agentReady: true` |
+| Held caller never returns | CallMerge blind transfer target — verify `agentNumber` in cache matches agent extension |
+| Conference API never fires | Mercury listener / widget bundle stale; hard-refresh Desktop after deploy |
+
+Server logs (Kubernetes example):
+
+```bash
+kubectl logs -l app=cc-voice-cherry-picker --tail=100 | grep transfer
+```
+
+---
 
 ## License
 
-All contents are licensed under the MIT license. Please see [license](LICENSE) for details.
+All contents are licensed under the MIT license. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-<!-- Keep the following here -->  
-Everything included is for demo and Proof of Concept purposes only. Use of the site is solely at your own risk. This site may contain links to third party content, which we do not warrant, endorse, or assume liability for. These demos are for Cisco Webex usecases, but are not Official Cisco Webex Branded demos.
- 
- 
+Everything included is for demo and Proof of Concept purposes only. Use of the site is solely at your own risk. This site may contain links to third party content, which we do not warrant, endorse, or assume liability for. These demos are for Cisco Webex use cases, but are not Official Cisco Webex Branded demos.
+
 ## Support
 
-Please contact the Webex SD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=CCCherryPickerWidget) for questions. Or for Cisco internal, reach out to us on Webex App via our bot globalexpert@webex.bot & choose "Engagement Type: API/SDK Proof of Concept Integration Development". 
+Contact the Webex SD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=CCCherryPickerWidget), or Cisco internal via globalexpert@webex.bot — **Engagement Type: API/SDK Proof of Concept Integration Development**.
